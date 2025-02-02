@@ -42,7 +42,7 @@ on:
 permissions:
   contents: read
   id-token: write
-  pull-requests: write  # so we can post plan as a PR comment if is_pr == true
+  pull-requests: write
 
 jobs:
   plan:
@@ -54,14 +54,11 @@ jobs:
     env:
       # The environment secrets are automatically mapped to these if environment_name matches
       # e.g., for dev-plan environment, we get secrets.AZURE_CLIENT_ID, secrets.AZURE_SUBSCRIPTION_ID, etc.
-
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}  # This might be org-level variable
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}  # Org-level variable
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       ARM_USE_OIDC: "true"
       ARM_SKIP_PROVIDER_REGISTRATION: "true"
-
-      # We also pass environment_name to Terraform for convenience
       TF_VAR_env: ${{ inputs.environment_name }}
 
     steps:
