@@ -1,4 +1,4 @@
-Unlike those people saying "this is a complicated issue" I would say: there's no question about it: use folders. Your master/main branch is what's running. All other branches should be short-lived and should merge into master. - random Reddit user
+"Unlike those people saying "this is a complicated issue" I would say: there's no question about it: use folders. Your master/main branch is what's running. All other branches should be short-lived and should merge into master." - random Reddit user
 
 Optimal structure (TBC):
 

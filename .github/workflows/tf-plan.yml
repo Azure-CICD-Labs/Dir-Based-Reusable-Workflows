@@ -1,0 +1,154 @@
+name: Reusable Terraform Plan
+
+on:
+  workflow_call:
+    inputs:
+      # The subdirectory (e.g., "terraform/Personal-Dev" or "terraform/Personal-Prod")
+      subdirectory:
+        description: "Path to the Terraform folder"
+        required: true
+        type: string
+      environment_name:
+        description: "Environment name for gating (e.g. dev-plan or prod-plan)"
+        required: true
+        type: string
+      plan_filename:
+        description: "Name of the .tfplan file (e.g. dev.tfplan)"
+        required: true
+        type: string
+      artifact_name:
+        description: "Name of the plan artifact (e.g. terraform-prod-plan)"
+        required: true
+        type: string
+      tfstate_key:
+        description: "Backend state file key (e.g. personal-dev.tfstate or personal-prod.tfstate)"
+        required: true
+        type: string
+      checkout_ref:
+        description: "Git ref/sha to check out"
+        required: true
+        type: string
+      is_pr:
+        description: "Whether the original event is a PR"
+        required: false
+        type: boolean
+        default: false
+
+    outputs:
+      tfplan_exitcode:
+        description: "Terraform plan exit code"
+        value: ${{ jobs.plan.outputs.tfplan_exitcode }}
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write  # so we can post plan as a PR comment if is_pr == true
+
+jobs:
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment_name }}
+    outputs:
+      tfplan_exitcode: ${{ steps.tf-plan.outputs.exitcode }}
+    env:
+      # The environment secrets are automatically mapped to these if environment_name matches
+      # e.g., for dev-plan environment, we get secrets.AZURE_CLIENT_ID, secrets.AZURE_SUBSCRIPTION_ID, etc.
+
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}  # This might be org-level variable
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+      ARM_SKIP_PROVIDER_REGISTRATION: "true"
+
+      # We also pass environment_name to Terraform for convenience
+      TF_VAR_env: ${{ inputs.environment_name }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.6
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        id: init
+        working-directory: ${{ inputs.subdirectory }}
+        run: |
+          terraform init \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER_NAME }}" \
+            -backend-config="key=${{ inputs.tfstate_key }}"
+
+      - name: Terraform Plan
+        id: tf-plan
+        working-directory: ${{ inputs.subdirectory }}
+        shell: bash
+        run: |
+          exitcode=0
+          terraform plan -detailed-exitcode -no-color -out=${{ inputs.plan_filename }} || exitcode=$?
+          echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
+          echo "Terraform plan exit code: $exitcode"
+
+          if [ $exitcode -eq 1 ]; then
+            echo "Terraform Plan Failed!"
+            exit 1
+          fi
+          # exitcode=0 => no changes, exitcode=2 => changes present
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.subdirectory }}/${{ inputs.plan_filename }}
+
+      - name: Create Plan String
+        id: planstring
+        working-directory: ${{ inputs.subdirectory }}
+        run: |
+          PLAN_CONTENT=$(terraform show -no-color ${{ inputs.plan_filename }})
+          # Generate a random delimiter so we can do multiline output
+          delimiter="$(openssl rand -hex 8)"
+
+          echo "summary<<${delimiter}" >> $GITHUB_OUTPUT
+          echo "## Terraform Plan Output (${{ inputs.environment_name }})" >> $GITHUB_OUTPUT
+          echo "<details><summary>Click to expand</summary>" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo '```terraform' >> $GITHUB_OUTPUT
+          echo "$PLAN_CONTENT" >> $GITHUB_OUTPUT
+          echo '```' >> $GITHUB_OUTPUT
+          echo "</details>" >> $GITHUB_OUTPUT
+          echo "${delimiter}" >> $GITHUB_OUTPUT
+
+      - name: Publish Plan to Task Summary
+        env:
+          SUMMARY: ${{ steps.planstring.outputs.summary }}
+        run: echo "$SUMMARY" >> $GITHUB_STEP_SUMMARY
+
+      - name: Post Plan to PR (if PR event)
+        if: ${{ inputs.is_pr == true }}
+        uses: actions/github-script@v7
+        env:
+          SUMMARY: ${{ steps.planstring.outputs.summary }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const body = process.env.SUMMARY;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });

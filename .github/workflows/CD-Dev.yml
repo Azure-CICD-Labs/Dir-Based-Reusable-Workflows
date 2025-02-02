@@ -1,0 +1,42 @@
+# .github/workflows/CD-Dev.yml
+name: Terraform CD - Dev
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  plan-dev:
+    name: Plan for Dev
+    uses: ./.github/workflows/tf-plan.yml
+    with:
+      subdirectory: "terraform/Personal-Dev"
+      environment_name: dev-plan
+      plan_filename: dev.tfplan
+      artifact_name: terraform-dev-plan
+      tfstate_key: "dirbased-personal-dev.tfstate"
+      checkout_ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      is_pr: ${{ github.event_name == 'pull_request' }}
+
+  apply-dev:
+    name: Apply to Dev
+    needs: [plan-dev]
+    uses: ./.github/workflows/tf-apply.yml
+    # Only apply on push (i.e., after the PR merges)
+    if: >
+      github.event_name == 'push' &&
+      needs.plan-dev.outputs.tfplan_exitcode == '2'
+    with:
+      subdirectory: "terraform/Personal-Dev"
+      environment_name: dev-apply
+      plan_filename: dev.tfplan
+      artifact_name: terraform-dev-plan
+      tfstate_key: "dirbased-personal-dev.tfstate"
+      checkout_ref: ${{ github.sha }}
